@@ -1,0 +1,214 @@
+#!/usr/bin/env python3
+"""
+SDM630 emulator, based on Pymodbus asynchronous server with updating task example.
+
+- uses the external programm cat
+  
+usage:
+
+    sdm630emulator [-h] [--comm {tcp,udp,serial,tls}]
+              [--framer {ascii,binary,rtu,socket,tls}]
+              [--log {critical,error,warning,info,debug}]
+              [--port PORT] [--store {sequential,sparse,factory,none}]
+              [--slaves SLAVES]
+
+    -h, --help
+        show this help message and exit
+    -c, --comm {tcp,udp,serial,tls}
+        set communication, default is tcp
+    -f, --framer {ascii,binary,rtu,socket,tls}
+        set framer, default depends on --comm
+    -l, --log {critical,error,warning,info,debug}
+        set log level, default is info
+    -p, --port PORT
+        set port
+        set serial device baud rate
+    --store {sequential,sparse,factory,none}
+        set datastore type
+    --slaves SLAVES
+        set number of slaves to respond to
+
+examples:
+
+    sdm630emulator -c serial -p /dev/ttyUSB0 --baudrate 9600 
+    sdm630emulator -c serial -p /dev/ttyUSB0 --baudrate 9600 -l debug
+
+"""
+
+import sys
+import serial, time
+import os, stat
+from os.path import exists
+from os import access, R_OK, W_OK
+from datetime import datetime
+
+from subprocess import Popen, PIPE
+import subprocess
+import decimal
+
+import asyncio
+import logging
+
+import server_async
+import struct
+
+from pymodbus.constants import Endian
+from collections import OrderedDict
+
+from pymodbus.payload import (
+    BinaryPayloadBuilder,
+)
+
+from pymodbus.datastore import (
+    ModbusSequentialDataBlock,
+    ModbusServerContext,
+    ModbusSlaveContext,
+)
+
+from pymodbus import (
+    pymodbus_apply_logging_config,
+)
+
+_logger = logging.getLogger(__name__)
+
+async def updating_task(context):
+    """
+    Update values in server.
+    This task runs continuously beside the server.
+    """
+
+    print("updating_task started")
+
+    # init
+    fc_as_hex = 4					        # modbus function code: read Input Registers
+    slave_id = 0x02					      # modbus: server ID (AKA slave ID) - We listen to this ID only! (2)
+                                  # Be aware!
+                                  # This value depends on how the inverter responds
+                                  # to the electricity meter. Growatt expects the
+                                  # Eastron SDM630 3-phase electricity meter behind modbus ID 2.
+                                  # See line 180!
+    cmd = "cat /run/power.txt"		# fetch the actual power consumption from a local file
+    power = -1000					        # init value for power
+    voltage = 238.42              # random value around 220 to 260 volt
+
+    # never ending loop
+    while True:
+
+        # We split the voltage to the three phases in equal parts
+        builder = BinaryPayloadBuilder(wordorder=Endian.BIG,byteorder=Endian.BIG)
+        builder.add_32bit_float(float(voltage))		      # Addr. 30001: Phase 1 line to neutral volts. --> Volt   (01+02)
+        builder.add_32bit_float(float(voltage))		      # Addr. 30003: Phase 2 line to neutral volts. --> Volt   (03+04)
+        builder.add_32bit_float(float(voltage))		      # Addr. 30005: Phase 3 line to neutral volts. --> Volt   (05+06)
+        builder.add_32bit_float(float(power/voltage/3))	# Addr. 30007: Phase 1 current.               --> Ampere (07+08)
+        builder.add_32bit_float(float(power/voltage/3))	# Addr. 30009: Phase 2 current.               --> Ampere (09+10)
+        builder.add_32bit_float(float(power/voltage/3))	# Addr. 30011: Phase 3 current.               --> Ampere (11+12)
+        builder.add_32bit_float(float(power/3))		      # Addr. 30013: Phase 1 power.                 --> Watt   (13+14)
+        builder.add_32bit_float(float(power/3))		      # Addr. 30015: Phase 2 power.                 --> Watt   (15+16)
+        builder.add_32bit_float(float(power/3))		      # Addr. 30017: Phase 3 power.                 --> Watt   (17+18)
+
+        # build the registers and write them to the storage
+        payload = builder.to_registers()
+        context[slave_id].setValues(fc_as_hex, 0, payload)
+
+        # Update variable "power" from file /run/power.txt
+        # Format of this file is:
+        # <UNIX timestamp>:<power>
+
+        try:
+            # Read the power consumption via ncat
+            ps = subprocess.Popen(cmd,shell=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+            await asyncio.sleep(0.5)
+            m_output = ps.communicate()[0]
+            m_string = m_output.decode("utf-8")
+        except subprocess.CalledProcessError as e:
+            print("updating_task: ERROR -- fetching power returned a non-zero exitcode. (ERR -300)")
+            power = -300
+        except subprocess.TimeoutExpired as e:
+            print("updating_task: ERROR -- fetching power timeout. (ERR -330)")
+            power = -330
+        else:
+            # We got a response. Now we check the format and other things.
+            # The response we fetched should look like this: "3456787:-34"
+            # (UNIX timestamp + ":" + power consumption as an integer).
+            m_list = m_string.split(":")
+            if len(m_list) != 2:
+                print("updating_task: ERROR -- Format wrong. (ERR -360)")
+                power = -360
+                continue
+
+            m_power_str = m_list[1]
+            m_tstamp_str = m_list[0]
+            
+            # Check: is m_power_str an integer?
+            try:
+                m_power = int(m_power_str)
+            except ValueError:
+                print("updating_task: ERROR -- m_power is not an integer. (ERR -390)")
+                power = -390
+                continue
+                
+            # Check: is m_tstamp_str an integer?
+            try:
+                m_tstamp = int(m_tstamp_str)
+            except ValueError:
+                print("updating_task: ERROR -- m_tstamp is not an integer. (ERR -420)")
+                power = -420
+                continue
+
+            # Check: is m_power_str older than 5sec?
+            diff = int(round(datetime.now().timestamp()) - m_tstamp)
+            if diff > 5:
+                print("updating_task: ERROR -- value is too old.")
+                power = -450
+                continue
+            
+            # Everything ok. Wert uebernehmen (wird in der nächsten Runde der Schleife gesetzt)
+            power = m_power
+            print("updating task: Set: " + str(diff) + " -- " + str(power))
+
+#
+# The stuff below is from pymodbus...
+# || || ||
+# \/ \/ \/
+
+def setup_updating_server(cmdline=None):
+    """Run server setup."""
+    # The datastores only respond to the addresses that are initialized
+    # If you initialize a DataBlock to addresses of 0x00 to 0xFF, a request to
+    # 0x100 will respond with an invalid address exception.
+    # This is because many devices exhibit this kind of behavior (but not all)
+
+    # Continuing, use a sequential block without gaps.
+    datablock = ModbusSequentialDataBlock(0x00, [17] * 100)
+
+    # Our ID is 0x02. We answer request to this ID only (and ignore the rest)
+    slaves = {
+        0x02: ModbusSlaveContext(di=datablock, co=datablock, hr=datablock, ir=datablock),
+    }
+    context = ModbusServerContext(slaves=slaves, single=False)
+
+    return server_async.setup_server(
+        description="Run asynchronous server.", context=context, cmdline=cmdline
+    )
+
+async def run_updating_server(args):
+    """Start updating_task concurrently with the current task."""
+    
+#    pymodbus_apply_logging_config("DEBUG","/var/log/mbus.log")
+    
+    task = asyncio.create_task(updating_task(args.context))
+    task.set_name("example updating task")
+    await server_async.run_async_server(args)  # start the server
+    task.cancel()
+
+
+async def main(cmdline=None):
+    """Combine setup and run."""
+    run_args = setup_updating_server(cmdline=cmdline)
+    await run_updating_server(run_args)
+
+
+if __name__ == "__main__":
+    asyncio.run(main(), debug=True)
+
+# this is the last line :-)
