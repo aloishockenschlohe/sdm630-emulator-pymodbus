@@ -2,6 +2,8 @@
 """
 SDM630 emulator, based on Pymodbus asynchronous server with updating task example.
 
+Version: 240804
+
 - uses the external programm cat
   
 usage:
