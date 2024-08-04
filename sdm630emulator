@@ -82,15 +82,15 @@ async def updating_task(context):
     print("updating_task started")
 
     # init
-    fc_as_hex = 4					        # modbus function code: read Input Registers
-    slave_id = 0x02					      # modbus: server ID (AKA slave ID) - We listen to this ID only! (2)
+    fc_as_hex = 4                 # modbus function code: read Input Registers
+    slave_id = 0x02               # modbus: server ID (AKA slave ID) - We listen to this ID only! (2)
                                   # Be aware!
                                   # This value depends on how the inverter responds
                                   # to the electricity meter. Growatt expects the
                                   # Eastron SDM630 3-phase electricity meter behind modbus ID 2.
-                                  # See line 180!
-    cmd = "cat /run/power.txt"		# fetch the actual power consumption from a local file
-    power = -1000					        # init value for power
+                                  # If you change this value, please change the value in line 188!
+    cmd = "cat /run/power.txt"    # fetch the actual power consumption from a local file
+    power = -1000                 # inital value for power
     voltage = 238.42              # random value around 220 to 260 volt
 
     # never ending loop
@@ -117,7 +117,7 @@ async def updating_task(context):
         # <UNIX timestamp>:<power>
 
         try:
-            # Read the power consumption via ncat
+            # Read the power consumption from a file (via external programm cat)
             ps = subprocess.Popen(cmd,shell=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
             await asyncio.sleep(0.5)
             m_output = ps.communicate()[0]
@@ -129,8 +129,9 @@ async def updating_task(context):
             print("updating_task: ERROR -- fetching power timeout. (ERR -330)")
             power = -330
         else:
-            # We got a response. Now we check the format and other things.
-            # The response we fetched should look like this: "3456787:-34"
+            # We got a value. Now we check the format and other things.
+
+            # 1. check: The response we fetched should look like this: "3456787:-34"
             # (UNIX timestamp + ":" + power consumption as an integer).
             m_list = m_string.split(":")
             if len(m_list) != 2:
@@ -149,7 +150,7 @@ async def updating_task(context):
                 power = -390
                 continue
                 
-            # Check: is m_tstamp_str an integer?
+            # 2. check: is m_tstamp_str an integer?
             try:
                 m_tstamp = int(m_tstamp_str)
             except ValueError:
@@ -157,14 +158,14 @@ async def updating_task(context):
                 power = -420
                 continue
 
-            # Check: is m_power_str older than 5sec?
+            # 3. Check: is m_power_str older than 5sec?
             diff = int(round(datetime.now().timestamp()) - m_tstamp)
             if diff > 5:
                 print("updating_task: ERROR -- value is too old.")
                 power = -450
                 continue
             
-            # Everything ok. Wert uebernehmen (wird in der nächsten Runde der Schleife gesetzt)
+            # Everything ok. We use the value.
             power = m_power
             print("updating task: Set: " + str(diff) + " -- " + str(power))
 
