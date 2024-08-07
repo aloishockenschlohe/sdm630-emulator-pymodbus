@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """
 SDM630 emulator, based on Pymodbus asynchronous server with updating task example.
+The programm reads the power consumption from a local file and makes the corresponding modbus registers available. 
 
 Version: 240804
 
-- uses the external programm cat
-  
 usage:
 
     sdm630emulator [-h] [--comm {tcp,udp,serial,tls}]
@@ -79,7 +78,7 @@ async def updating_task(context):
     This task runs continuously beside the server.
     """
 
-    print("updating_task started")
+    print("updating_task: started")
 
     # init
     fc_as_hex = 4                 # modbus function code: read Input Registers
@@ -93,10 +92,13 @@ async def updating_task(context):
     power = -1000                 # inital value for power
     voltage = 238.42              # random value around 220 to 260 volt
 
+    print("updating_task: initialised")
+
     # never ending loop
     while True:
 
-        # We split the voltage to the three phases in equal parts
+        # We split the power to the three power phases in equal parts
+        #
         builder = BinaryPayloadBuilder(wordorder=Endian.BIG,byteorder=Endian.BIG)
         builder.add_32bit_float(float(voltage))		      # Addr. 30001: Phase 1 line to neutral volts. --> Volt   (01+02)
         builder.add_32bit_float(float(voltage))		      # Addr. 30003: Phase 2 line to neutral volts. --> Volt   (03+04)
@@ -131,7 +133,7 @@ async def updating_task(context):
         else:
             # We got a value. Now we check the format and other things.
 
-            # 1. check: The response we fetched should look like this: "3456787:-34"
+            # 1. check: The value we fetched should look like this: "3456787:-34"
             # (UNIX timestamp + ":" + power consumption as an integer).
             m_list = m_string.split(":")
             if len(m_list) != 2:
@@ -142,7 +144,7 @@ async def updating_task(context):
             m_power_str = m_list[1]
             m_tstamp_str = m_list[0]
             
-            # Check: is m_power_str an integer?
+            # Check nr. 1: is m_power_str an integer?
             try:
                 m_power = int(m_power_str)
             except ValueError:
@@ -150,7 +152,7 @@ async def updating_task(context):
                 power = -390
                 continue
                 
-            # 2. check: is m_tstamp_str an integer?
+            # Check nr. 2: is m_tstamp_str an integer?
             try:
                 m_tstamp = int(m_tstamp_str)
             except ValueError:
@@ -158,14 +160,14 @@ async def updating_task(context):
                 power = -420
                 continue
 
-            # 3. Check: is m_power_str older than 5sec?
+            # Check nr. 3: is m_power_str older than 5sec?
             diff = int(round(datetime.now().timestamp()) - m_tstamp)
             if diff > 5:
                 print("updating_task: ERROR -- value is too old.")
                 power = -450
                 continue
             
-            # Everything ok. We use the value.
+            # Everything ok. We use the value we read from the file.
             power = m_power
             print("updating task: Set: " + str(diff) + " -- " + str(power))
 
