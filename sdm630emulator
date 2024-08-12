@@ -74,7 +74,7 @@ _logger = logging.getLogger(__name__)
 
 async def updating_task(context):
     """
-    Update values in server.
+    Read power values from a file, check them and set the values in the modbus server.
     This task runs continuously beside the server.
     """
 
@@ -89,7 +89,8 @@ async def updating_task(context):
                                   # Eastron SDM630 3-phase electricity meter behind modbus ID 2.
                                   # If you change this value, please change the value in line 188!
     cmd = "cat /run/power.txt"    # fetch the actual power consumption from a local file
-    power = -1000                 # inital value for power
+    power = 0                     # inital value for power
+    diff = 0                      # initial value for time difference
     voltage = 238.42              # random value around 220 to 260 volt
 
     print("updating_task: initialised")
@@ -97,20 +98,48 @@ async def updating_task(context):
     # never ending loop
     while True:
 
+        print("updating task: Set: " + str(diff) + " -- " + str(power))
+
         # We split the power to the three power phases in equal parts
         #
         builder = BinaryPayloadBuilder(wordorder=Endian.BIG,byteorder=Endian.BIG)
         builder.add_32bit_float(float(voltage))		      # Addr. 30001: Phase 1 line to neutral volts. --> Volt   (01+02)
         builder.add_32bit_float(float(voltage))		      # Addr. 30003: Phase 2 line to neutral volts. --> Volt   (03+04)
         builder.add_32bit_float(float(voltage))		      # Addr. 30005: Phase 3 line to neutral volts. --> Volt   (05+06)
-        builder.add_32bit_float(float(power/voltage/3))	# Addr. 30007: Phase 1 current.               --> Ampere (07+08)
-        builder.add_32bit_float(float(power/voltage/3))	# Addr. 30009: Phase 2 current.               --> Ampere (09+10)
-        builder.add_32bit_float(float(power/voltage/3))	# Addr. 30011: Phase 3 current.               --> Ampere (11+12)
+        builder.add_32bit_float(float(power/voltage/3))	  # Addr. 30007: Phase 1 current.               --> Ampere (07+08)
+        builder.add_32bit_float(float(power/voltage/3))	  # Addr. 30009: Phase 2 current.               --> Ampere (09+10)
+        builder.add_32bit_float(float(power/voltage/3))	  # Addr. 30011: Phase 3 current.               --> Ampere (11+12)
         builder.add_32bit_float(float(power/3))		      # Addr. 30013: Phase 1 power.                 --> Watt   (13+14)
         builder.add_32bit_float(float(power/3))		      # Addr. 30015: Phase 2 power.                 --> Watt   (15+16)
         builder.add_32bit_float(float(power/3))		      # Addr. 30017: Phase 3 power.                 --> Watt   (17+18)
 
         # build the registers and write them to the storage
+        payload = builder.to_registers()
+        context[slave_id].setValues(fc_as_hex, 0, payload)
+
+        # Be aware! Some inverters (f.e. the Growatt SPH3000) check the power meter and
+        # correct the power output several times per second.
+        # If you can't keep up with the correct power values, the inverter will overcorrect
+        # the power feed.
+        #
+        # Solution: Keep the power values for a short amount of time (around 0.5sec).
+        # Inverter should have adapted. Now set the power consumption to "0" to avoid overcorrection.
+
+        await asyncio.sleep(0.5)
+
+        # print("updating task: avoid overcorrecting.")
+        power = 0
+        builder = BinaryPayloadBuilder(wordorder=Endian.BIG,byteorder=Endian.BIG)
+        builder.add_32bit_float(float(238.42))     # Addr. 30001: Phase 1 line to neutral volts. --> Volt   (01+02)
+        builder.add_32bit_float(float(238.42))     # Addr. 30003: Phase 2 line to neutral volts. --> Volt   (03+04)
+        builder.add_32bit_float(float(238.42))     # Addr. 30005: Phase 3 line to neutral volts. --> Volt   (05+06)
+        builder.add_32bit_float(0)                 # Addr. 30007: Phase 1 current.               --> Ampere (07+08)
+        builder.add_32bit_float(0)                 # Addr. 30009: Phase 2 current.               --> Ampere (09+10)
+        builder.add_32bit_float(0)                 # Addr. 30011: Phase 3 current.               --> Ampere (11+12)
+        builder.add_32bit_float(0)                 # Addr. 30013: Phase 1 power.                 --> Watt   (13+14)
+        builder.add_32bit_float(0)                 # Addr. 30015: Phase 2 power.                 --> Watt   (15+16)
+        builder.add_32bit_float(0)                 # Addr. 30017: Phase 3 power.                 --> Watt   (17+18)
+
         payload = builder.to_registers()
         context[slave_id].setValues(fc_as_hex, 0, payload)
 
@@ -125,51 +154,44 @@ async def updating_task(context):
             m_output = ps.communicate()[0]
             m_string = m_output.decode("utf-8")
         except subprocess.CalledProcessError as e:
-            print("updating_task: ERROR -- fetching power returned a non-zero exitcode. (ERR -300)")
-            power = -300
+            print("updating_task: ERROR -- fetching power returned a non-zero exitcode.")
         except subprocess.TimeoutExpired as e:
-            print("updating_task: ERROR -- fetching power timeout. (ERR -330)")
-            power = -330
+            print("updating_task: ERROR -- fetching power timeout.")
         else:
-            # We got a value. Now we check the format and other things.
+            # We read a value from file '/run/power.txt'. Let's check the format and other things.
 
-            # 1. check: The value we fetched should look like this: "3456787:-34"
+            # Check: The value we fetched should look like this: "3456787:-34"
             # (UNIX timestamp + ":" + power consumption as an integer).
             m_list = m_string.split(":")
             if len(m_list) != 2:
-                print("updating_task: ERROR -- Format wrong. (ERR -360)")
-                power = -360
+                print("updating_task: ERROR -- Format wrong: " + m_string)
                 continue
 
             m_power_str = m_list[1]
             m_tstamp_str = m_list[0]
             
-            # Check nr. 1: is m_power_str an integer?
+            # Check: is m_power_str an integer?
             try:
                 m_power = int(m_power_str)
             except ValueError:
-                print("updating_task: ERROR -- m_power is not an integer. (ERR -390)")
-                power = -390
+                print("updating_task: ERROR -- m_power is not an integer.")
                 continue
                 
-            # Check nr. 2: is m_tstamp_str an integer?
+            # Check: is m_tstamp_str an integer?
             try:
                 m_tstamp = int(m_tstamp_str)
             except ValueError:
-                print("updating_task: ERROR -- m_tstamp is not an integer. (ERR -420)")
-                power = -420
+                print("updating_task: ERROR -- m_tstamp is not an integer.")
                 continue
 
-            # Check nr. 3: is m_power_str older than 5sec?
+            # Check: is m_power_str older than 5sec?
             diff = int(round(datetime.now().timestamp()) - m_tstamp)
             if diff > 5:
                 print("updating_task: ERROR -- value is too old.")
-                power = -450
                 continue
             
             # Everything ok. We use the value we read from the file.
             power = m_power
-            print("updating task: Set: " + str(diff) + " -- " + str(power))
 
 #
 # The stuff below is from pymodbus...
