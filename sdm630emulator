@@ -90,7 +90,7 @@ async def updating_task(context):
                                   # If you change this value, please change the value in line 188!
     cmd = "cat /run/power.txt"    # fetch the actual power consumption from a local file
     power = 0                     # inital value for power
-    diff = 0                      # initial value for time difference
+    diff = 0                      # initial value for time difference between the timestamp of the delivered power consumption and the local clock
     voltage = 238.42              # random value around 220 to 260 volt
 
     print("updating_task: initialised")
@@ -129,23 +129,23 @@ async def updating_task(context):
 
         # print("updating task: avoid overcorrecting.")
         power = 0
-        builder = BinaryPayloadBuilder(wordorder=Endian.BIG,byteorder=Endian.BIG)
-        builder.add_32bit_float(float(238.42))     # Addr. 30001: Phase 1 line to neutral volts. --> Volt   (01+02)
-        builder.add_32bit_float(float(238.42))     # Addr. 30003: Phase 2 line to neutral volts. --> Volt   (03+04)
-        builder.add_32bit_float(float(238.42))     # Addr. 30005: Phase 3 line to neutral volts. --> Volt   (05+06)
-        builder.add_32bit_float(0)                 # Addr. 30007: Phase 1 current.               --> Ampere (07+08)
-        builder.add_32bit_float(0)                 # Addr. 30009: Phase 2 current.               --> Ampere (09+10)
-        builder.add_32bit_float(0)                 # Addr. 30011: Phase 3 current.               --> Ampere (11+12)
-        builder.add_32bit_float(0)                 # Addr. 30013: Phase 1 power.                 --> Watt   (13+14)
-        builder.add_32bit_float(0)                 # Addr. 30015: Phase 2 power.                 --> Watt   (15+16)
-        builder.add_32bit_float(0)                 # Addr. 30017: Phase 3 power.                 --> Watt   (17+18)
+        builder = BinaryPayloadBuilder(wordorder=Endian.BIG,byteorder=Endian.BIG)    # Be aware! These settings are is very important. If you set the word- and byteorder wrong, the values will be misinterpreted.
+        builder.add_32bit_float(float(238.42))     # Addr. 30001: Phase 1 line to neutral volts. --> Volt 
+        builder.add_32bit_float(float(238.42))     # Addr. 30003: Phase 2 line to neutral volts. --> Volt
+        builder.add_32bit_float(float(238.42))     # Addr. 30005: Phase 3 line to neutral volts. --> Volt
+        builder.add_32bit_float(0)                 # Addr. 30007: Phase 1 current.               --> Ampere
+        builder.add_32bit_float(0)                 # Addr. 30009: Phase 2 current.               --> Ampere
+        builder.add_32bit_float(0)                 # Addr. 30011: Phase 3 current.               --> Ampere
+        builder.add_32bit_float(0)                 # Addr. 30013: Phase 1 power.                 --> Watt
+        builder.add_32bit_float(0)                 # Addr. 30015: Phase 2 power.                 --> Watt
+        builder.add_32bit_float(0)                 # Addr. 30017: Phase 3 power.                 --> Watt
 
         payload = builder.to_registers()
         context[slave_id].setValues(fc_as_hex, 0, payload)
 
         # Update variable "power" from file /run/power.txt
         # Format of this file is:
-        # <UNIX timestamp>:<power>
+        # <UNIX timestamp>:<power consumption in whole watts (integer value)>
 
         try:
             # Read the power consumption from a file (via external programm cat)
