@@ -1,0 +1,13 @@
+#!/bin/bash
+
+#240801-AHo: A very simple shellscript to fetch a string from a simple remote server over and over again. Ugly, but it works.
+
+# Version: 240801 
+
+        while true; do
+        
+                timeout -k 2 --preserve-status 3s bash -c 'power=`ncat --recv-only 192.168.2.101 7000`; echo $power > /run/power.txt'
+                sleep 0.5
+        done
+
+# this is the last line :-)
