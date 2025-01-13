@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """
-SDM630 emulator, based on Pymodbus asynchronous server with updating task example.
+SDM630 emulator, based on Pymodbus asynchronous server (see (see: https://github.com/pymodbus-dev/pymodbus)) with updating task example.
 The programm reads the power consumption from a local file and makes the corresponding modbus registers available. 
+
+!!
+!! You have to install pymodbus first. Otherwise you'll get the error "ModuleNotFoundError: No module named 'server_async'".
+!! Put this code in the directory "pymodbus /examples/" where the python code ''server_async'' is located.
+!!
 
 Version: 240804
 
